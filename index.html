@@ -1,93 +1,306 @@
+<!doctype html>
+<html lang="ru" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Stash Logger — Firebase</title>
 
-<HTML>
-    <head>
-        <link rel="stylesheet" href="style.css">
-        <title> Главная страница</title>
-        <meta charset="UTF-8">
-        <meta name="viewport" 
-              content="width=device-width, initial-scale=1.0">
-        <link rel="stylesheet" href="style.css">
-        <link rel="icon" type = "images/x-icon" href = "apple.ico">
-       </head>
+<!-- Tailwind -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = { darkMode: "class" }
+</script>
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-       <body style = "font-family: 'myFirstFont';">
-        <table>
-            <tr>
-                <td width = 50%><a href = "index.html"><h1>Главная</h1></a></td>
-                <td width = 50%><a href = "page.html"><h1>C#Sploit</h1></a></td>
+<!-- Firebase -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-app.js";
+  import { getDatabase, ref, push, set, get, child } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-database.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyBKtukBrMR6Jtsy6GAFXnHJ6GG1waIVNiQ",
+    authDomain: "stash-8be87.firebaseapp.com",
+    databaseURL: "https://stash-8be87-default-rtdb.firebaseio.com",
+    projectId: "stash-8be87",
+    storageBucket: "stash-8be87.firebasestorage.app",
+    messagingSenderId: "457257278965",
+    appId: "1:457257278965:web:f226cf9c70438c0b3c14bc",
+    measurementId: "G-LTE3HW6DZX"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+
+  const uid = ()=> Date.now().toString(36)+Math.random().toString(36).slice(2);
+
+  let entries = [];
+  let chartTime, chartItems, chartPie;
+
+  // --- Работа с cookie ---
+  function setCookie(name, value, days){
+    const d = new Date();
+    d.setTime(d.getTime() + (days*24*60*60*1000));
+    document.cookie = name + "=" + value + ";path=/;expires=" + d.toUTCString();
+  }
+
+  function getCookie(name){
+    const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+    if(match) return match[2];
+    return null;
+  }
+
+  // --- Firebase ---
+  async function addEntryFirebase(entry){
+    const newRef = push(ref(db, "entries"));
+    await set(newRef, entry);
+    await loadEntriesFirebase();
+  }
+
+  async function loadEntriesFirebase(){
+    const snapshot = await get(child(ref(db), "entries"));
+    if(snapshot.exists()){
+      entries = Object.values(snapshot.val());
+    } else entries = [];
+    renderAll();
+  }
+
+  // --- Добавление записи ---
+  function addEntry(e){
+    e.preventDefault();
+    const type = document.getElementById('type').value;
+    const item = document.getElementById('item').value.trim();
+    const amount = +document.getElementById('amount').value;
+    const ts = document.getElementById('ts').value ? new Date(document.getElementById('ts').value).toISOString() : new Date().toISOString();
+    const coords = document.getElementById('coords').value.trim();
+    const note = document.getElementById('note').value.trim();
+    if(!item || !amount) return;
+    const entry = {id:uid(), type, item, amount, ts, coords, note};
+    addEntryFirebase(entry);
+    e.target.reset();
+  }
+
+  // --- Таблица ---
+  function renderTable(){
+    const tbody = document.querySelector('#entriesTable tbody');
+    tbody.innerHTML = '';
+    entries.slice().reverse().forEach(e=>{
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td class="py-2">${new Date(e.ts).toLocaleString()}</td>
+      <td>${e.type}</td><td>${e.item}</td><td>${e.amount}</td><td>${e.coords||''}</td><td>${e.note||''}</td>`;
+      tbody.appendChild(tr);
+    });
+  }
+
+  // --- Диаграммы ---
+  function aggregateByDay(list){
+    const map={};
+    list.forEach(e=>{
+      const d=e.ts.slice(0,10);
+      if(!map[d]) map[d]={add:0, remove:0};
+      map[d][e.type]+=e.amount;
+    });
+    return {days:Object.keys(map).sort(), map};
+  }
+
+  function topItems(list){
+    const sums={};
+    list.forEach(e=>{
+      sums[e.item]=(sums[e.item]||0)+(e.type==='add'?1:-1)*e.amount;
+    });
+    return Object.entries(sums).map(([k,v])=>({item:k,val:v})).sort((a,b)=>b.val-a.val).slice(0,10);
+  }
+
+  function renderCharts(){
+    const list = entries;
+
+    const agg = aggregateByDay(list);
+    const days = agg.days;
+    const adds = days.map(d=>agg.map[d].add);
+    const removes = days.map(d=>agg.map[d].remove);
+
+    if(!chartTime){
+      chartTime = new Chart(document.getElementById('chartTime'),{
+        type:'line',
+        data:{labels:days,datasets:[
+          {label:'Добавления',data:adds,borderColor:'lime',tension:0.3},
+          {label:'Изъятия',data:removes,borderColor:'red',tension:0.3}]},
+        options:{responsive:true,plugins:{legend:{labels:{color:'white'}}},scales:{x:{ticks:{color:'white'}},y:{ticks:{color:'white'}}}}
+      });
+    } else {
+      chartTime.data.labels = days;
+      chartTime.data.datasets[0].data = adds;
+      chartTime.data.datasets[1].data = removes;
+      chartTime.update();
+    }
+
+    const top = topItems(list);
+    const items = top.map(x=>x.item);
+    const vals = top.map(x=>x.val);
+
+    if(!chartItems){
+      chartItems = new Chart(document.getElementById('chartItems'),{
+        type:'bar',
+        data:{labels:items,datasets:[{data:vals,backgroundColor:'steelblue'}]},
+        options:{indexAxis:'y',plugins:{legend:{labels:{color:'white'}}},scales:{x:{ticks:{color:'white'}},y:{ticks:{color:'white'}}}}
+      });
+    } else {
+      chartItems.data.labels = items;
+      chartItems.data.datasets[0].data = vals;
+      chartItems.update();
+    }
+
+    const sums={};
+    list.forEach(e=>{
+      sums[e.item]=(sums[e.item]||0)+(e.type==='add'?1:-1)*e.amount;
+    });
+    const labels3 = Object.keys(sums);
+    const data3 = Object.values(sums);
+
+    if(!chartPie){
+      chartPie = new Chart(document.getElementById('chartPie'),{
+        type:'pie',
+        data:{labels:labels3,datasets:[{data:data3}]},
+        options:{plugins:{legend:{position:'bottom',labels:{color:'white'}}}}
+      });
+    } else {
+      chartPie.data.labels = labels3;
+      chartPie.data.datasets[0].data = data3;
+      chartPie.update();
+    }
+  }
+
+  function renderAll(){ renderTable(); renderCharts(); }
+
+  // --- Авторизация ---
+  function login(e){
+    e.preventDefault();
+    const login = document.getElementById('loginInput').value.trim();
+    const pass = document.getElementById('passwordInput').value.trim();
+    if(login==='local' && pass==='localstash452ob'){
+      setCookie('stash_login','true',7);
+      document.getElementById('loginScreen').classList.add('hidden');
+      document.getElementById('app').classList.remove('hidden');
+      loadEntriesFirebase();
+    } else {
+      document.getElementById('loginError').classList.remove('hidden');
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", ()=>{
+    if(getCookie('stash_login')==='true'){
+      document.getElementById('loginScreen').classList.add('hidden');
+      document.getElementById('app').classList.remove('hidden');
+      loadEntriesFirebase();
+    }
+    document.getElementById('entryForm').addEventListener('submit',addEntry);
+    document.getElementById('loginForm').addEventListener('submit',login);
+  });
+</script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen p-6 font-sans">
+
+<!-- Экран авторизации -->
+<div id="loginScreen" class="fixed inset-0 flex items-center justify-center bg-slate-900">
+  <div class="bg-slate-800 p-6 rounded-lg shadow w-80">
+    <h2 class="text-xl font-bold mb-4">Авторизация</h2>
+    <form id="loginForm" class="space-y-3">
+      <div>
+        <label class="block text-xs">Логин</label>
+        <input id="loginInput" required class="w-full border border-slate-600 rounded px-2 py-1 bg-slate-900 text-white" />
+      </div>
+      <div>
+        <label class="block text-xs">Пароль</label>
+        <input id="passwordInput" type="password" required class="w-full border border-slate-600 rounded px-2 py-1 bg-slate-900 text-white" />
+      </div>
+      <button class="bg-red-600 hover:bg-red-700 w-full text-white px-3 py-1 rounded">Войти</button>
+      <p id="loginError" class="text-red-400 text-sm mt-2 hidden">Неверный логин или пароль</p>
+    </form>
+  </div>
+</div>
+
+<!-- Основное приложение -->
+<div id="app" class="max-w-6xl mx-auto hidden">
+  <header class="mb-6">
+    <h1 class="text-2xl font-bold">Stash Logger</h1>
+    <p class="text-sm text-slate-400">Все записи хранятся на Firebase Realtime Database.</p>
+  </header>
+
+  <main class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- Форма -->
+    <section class="lg:col-span-1 bg-slate-800 p-4 rounded-lg shadow">
+      <h2 class="font-semibold mb-3">Добавить запись</h2>
+      <form id="entryForm" class="space-y-3">
+        <div>
+          <label class="block text-xs">Тип</label>
+          <select id="type" class="w-full border border-slate-600 rounded px-2 py-1 bg-slate-900 text-white">
+            <option value="add">Добавление</option>
+            <option value="remove">Изъятие</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs">Предмет</label>
+          <input id="item" required class="w-full border border-slate-600 rounded px-2 py-1 bg-slate-900 text-white" />
+        </div>
+        <div>
+          <label class="block text-xs">Количество</label>
+          <input id="amount" type="number" value="1" min="1" class="w-full border border-slate-600 rounded px-2 py-1 bg-slate-900 text-white" />
+        </div>
+        <div>
+          <label class="block text-xs">Дата</label>
+          <input id="ts" type="datetime-local" class="w-full border border-slate-600 rounded px-2 py-1 bg-slate-900 text-white" />
+        </div>
+        <div>
+          <label class="block text-xs">Координаты</label>
+          <input id="coords" placeholder="x, y, z" class="w-full border border-slate-600 rounded px-2 py-1 bg-slate-900 text-white" />
+        </div>
+        <div>
+          <label class="block text-xs">Заметка</label>
+          <input id="note" class="w-full border border-slate-600 rounded px-2 py-1 bg-slate-900 text-white" />
+        </div>
+        <button class="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded">Добавить</button>
+      </form>
+    </section>
+
+    <!-- Графики -->
+    <section class="lg:col-span-2 space-y-6">
+      <div class="bg-slate-800 p-4 rounded-lg shadow">
+        <h2 class="font-semibold mb-2">Диаграммы</h2>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <h3 class="text-sm mb-2">По дням</h3>
+            <canvas id="chartTime" height="180"></canvas>
+          </div>
+          <div>
+            <h3 class="text-sm mb-2">Топ предметов</h3>
+            <canvas id="chartItems" height="180"></canvas>
+          </div>
+          <div>
+            <h3 class="text-sm mb-2">Круговая</h3>
+            <canvas id="chartPie" height="180"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Таблица -->
+      <div class="bg-slate-800 p-4 rounded-lg shadow overflow-x-auto">
+        <h2 class="font-semibold mb-3">Записи</h2>
+        <table class="w-full text-sm" id="entriesTable">
+          <thead>
+            <tr class="text-slate-400">
+              <th class="py-2">Время</th>
+              <th>Тип</th>
+              <th>Предмет</th>
+              <th>Кол-во</th>
+              <th>Координаты</th>
+              <th>Заметка</th>
             </tr>
+          </thead>
+          <tbody></tbody>
         </table>
-        
-        
-        <a name="up"></a>
-        <a href="#down">w0etigjaq]</a>
-        <a>Внз</a>
-        <p>egg</p>
-        <h1>egg</h1>
-        <h2>egg</h2>
-        <h3>egg</h3>
-        <h4>egg</h4>
-        <h5>egg</h5>
-        <h6>egg</h6>
-    
-    
-
-    <br>
-    <table border="10px" width="50%" >
-    <!-- 1 строка-->
-        <tr height = "20px">
-            <td bgcolor="#000000">
-            
-            </td>
-            <td>
-               
-            </td>
-            <td bgcolor="#000000">
-                  
-            </td>
-            <td>
-              
-            </td>
-           </tr>
-    <!--2 строка-->
-    <tr height = "20px">
-            <td>
-            
-            </td>
-            <td bgcolor="#000000">
-               
-            </td>
-            <td>
-                  
-            </td>
-            <td bgcolor="#000000">
-              
-            </td>
-           </tr>
-    </table>
-<br> 
-<h2>Тут будет чтото</h2>
-<br>
-
-<iframe
-width="720"
-height="405"
-src="https://rutube.ru/play/embed/c6cc4d620b1d4338901770a44b3e82f4"
-frameBorder="0"
-allow="clipboard-write; autoplay"
-webkitAllowFullScreen
-mozallowfullscreen
-allowFullScreen
-></iframe>
-<a name="down"></a>
-<a href="#up">w0etigjaq]</a>
-
-<footer width ="100%" height="50px">
-    <table>
-        <tr>
-            <td width="50%" align = "center"> Creators: Ston and Fizhma</td>
-            <td width="50%" align = "center"> Last modified on 02/08/2025 </td>
-        </tr>
-</footer>
-       </body>
-</HTML>
+      </div>
+    </section>
+  </main>
+</div>
+</body>
+</html>
